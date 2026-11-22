@@ -1,0 +1,6 @@
+User: I want to build a fast REST API in Python for tracking expenses.
+Assistant: Great! Let's use FastAPI and SQLite to get started quickly.
+User: Actually, scratch SQLite. We need concurrent writes, so let's switch to PostgreSQL. And strict rule: never use an ORM like SQLAlchemy, only raw SQL.
+Assistant: Understood. Switched to PostgreSQL with raw SQL via asyncpg.
+User: I ran the server and hit `asyncpg.exceptions.InvalidCatalogNameError: database "expenses" does not exist`.
+Assistant: You need to create the `expenses` database in Postgres first before connecting.
