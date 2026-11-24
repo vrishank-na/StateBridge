@@ -1,95 +1,183 @@
-StateBridge
-Deterministic, Model-Agnostic Cross-Session State Compiler for Long LLM Engineering Conversations
+# StateBridge
 
-Long-running coding sessions with LLMs are vulnerable to context rot. As a conversation grows, important rules can be forgotten, abandoned libraries can reappear, resolved errors can remain as noise, and API latency and costs can increase. Asking an LLM to summarize the conversation often produces unpredictable prose that may omit edge-case constraints or exceed a target token budget.
+**Deterministic, Model-Agnostic Cross-Session State Compiler for Long LLM Engineering Conversations.**
 
-StateBridge addresses this problem by treating conversation memory as a state machine. It separates semantic extraction, performed incrementally by an LLM, from state mutation and token budgeting, handled deterministically in pure Python. It compiles large, multi-turn chat transcripts into a concise, size-bounded handoff prompt that can be used with Gemini, Claude, ChatGPT, or a local model.
-Core architecture
-StateBridge processes raw transcripts through a six-stage modular pipeline:
+Long-running coding sessions with LLMs suffer from **context rot**: as message history grows into thousands of tokens, strict rules get forgotten, abandoned libraries resurface, resolved errors linger as noise, and API latency and costs climb.
+
+Asking an LLM to simply "summarize the chat" produces unpredictable prose that still drops edge-case constraints and ignores token limits.
+
+**StateBridge** solves this by treating conversation memory like a **state machine**. Instead of relying on free-form LLM summaries, it separates:
+
+- **Semantic extraction:** Handled incrementally by an LLM.
+- **State mutation and token budgeting:** Handled deterministically in pure Python.
+
+It compiles bloated multi-turn chat transcripts into a crisp, guaranteed-size handoff prompt portable across Gemini, Claude, ChatGPT, or any local model.
+
+## Core Architecture
+
+StateBridge processes raw transcripts through a 6-stage modular pipeline:
+
+```text
 Raw Chat Transcript (JSON / Labeled / Plain Text)
-        |
-        v
-+---------------------+
-| 1. Parser           | Splits turns with regex and chunks them into batches
-|                     | (default: 4 turns; token counting via tiktoken)
-+----------+----------+
-           |
-           v
-+---------------------+
-| 2. Extractor        | Extracts structured StateDelta changes using Gemini
-|                     | Structured Outputs, with model fallback and mock mode
-+----------+----------+
-           |
-           v
-+---------------------+
-| 3. Reducer          | Applies deterministic state transitions in pure Python
-|                     | Deduplicates rules and clears deprecated/resolved state
-+----------+----------+
-           |
-           v
-+---------------------+
-| 4. Compiler         | Renders a Markdown handoff prompt and enforces a token budget
-|                     | while preserving the core goal and hard constraints
-+----------+----------+
-           |
-           v
-       CLI / REST API
-           |
-           v
-Portable handoff prompt for a fresh LLM session
-Pipeline components
-1. Schema (src/schema.py) — Strict Pydantic v2 models, ProjectState and StateDelta, define typed state mutations instead of relying on unstructured text.
-2. Parser and chunker (src/parser.py) — Detects OpenAI/Anthropic JSON message arrays ([{"role": ..., "content": ...}]), labeled transcripts (such as User: / Assistant: and You said: / ChatGPT said:), or unlabeled plain text. It splits the transcript into configurable batches and counts tokens with tiktoken using cl100k_base.
-3. LLM delta extractor (src/extractor.py) — Evaluates each four-turn window against the current ProjectState and extracts a structured StateDelta using Google GenAI Structured Outputs (response_schema=StateDelta). It supports automatic model fallback and a deterministic offline --mock mode for development and CI.
-4. Deterministic state reducer (src/reducer.py) — Implements pure-Python state transitions through apply_delta. It handles case-insensitive deduplication, moves abandoned tools from tech_stack to deprecated_approaches, and clears resolved bugs using substring matching.
-5. Token-budgeted prompt compiler (src/compiler.py) — Compiles ProjectState into a structured Markdown handoff prompt and enforces compiled_tokens <= budget. When the prompt is too large, it removes lower-priority information first, in this order: deprecated_approaches, next_steps, active_bugs, and tech_stack. The core goal and hard constraints are preserved.
-6. Interfaces (src/cli.py, src/api.py) — Provides a Typer + Rich command-line interface and a FastAPI microservice with a POST /compile endpoint for integration into AI coding agents and chat pipelines.
-Features
-- Structured state: Pydantic models represent project state and incremental state changes.
-- Incremental extraction: Processes conversation history in small batches against the state accumulated so far.
-- Deterministic reduction: Python controls how extracted changes are merged, deduplicated, deprecated, and cleared.
-- Token-budget enforcement: Produces a compiled prompt within the requested budget while preserving the core goal and hard constraints.
-- Model portability: Produces Markdown that can be handed to Gemini, Claude, ChatGPT, or local models.
-- Offline mode: Supports deterministic mock extraction without external API calls.
-- Multiple interfaces: Use the CLI for local transcripts or the REST API for programmatic integration.
-System setup and installation
-Prerequisites
-- Python 3.10 or later
-- Git
-- A Gemini API key from Google AI Studio (optional when using offline mock mode)
-1. Clone the repository
-Replace <your-username> with the GitHub account or organization that hosts the repository.
+        │
+        ▼
+┌───────────────────┐
+│  1. Parser        │  Splits turns via regex & chunks into 4-turn batches (tiktoken)
+└────────┬──────────┘
+         ▼
+┌───────────────────┐
+│  2. Extractor     │  Extracts structured StateDelta diffs via Gemini Structured Outputs
+└────────┬──────────┘  (with multi-model fallback & deterministic --mock offline mode)
+         ▼
+┌───────────────────┐
+│  3. Reducer       │  Pure Python state engine: deduplicates rules, evicts deprecated
+└────────┬──────────┘  tech from active stack, and clears resolved bugs
+         ▼
+┌───────────────────┐
+│  4. Compiler      │  Renders Markdown handoff & enforces max_tokens via priority
+└────────┬──────────┘  trimming (never drops Core Goal or Hard Constraints)
+         ▼
+    CLI / REST API
+         │
+         ▼
+Portable handoff prompt ready for any fresh LLM session
+```
+
+### Schema (`src/schema.py`)
+
+Strict Pydantic v2 models (`ProjectState` and `StateDelta`) defining typed state mutations rather than unstructured text.
+
+### Parser & Chunker (`src/parser.py`)
+
+Auto-detects:
+
+- OpenAI/Anthropic JSON message arrays (`[{"role": ..., "content": ...}]`)
+- Labeled transcripts (`User:` / `Assistant:`, `You said:` / `ChatGPT said:`)
+- Unlabeled plain text
+
+Splits conversations into batches and counts exact tokens using `tiktoken` with `cl100k_base`.
+
+### LLM Delta Extractor (`src/extractor.py`)
+
+Evaluates 4-turn windows against the current `ProjectState` using Google GenAI Structured Outputs (`response_schema=StateDelta`).
+
+Features:
+
+- Automatic model fallback.
+- Deterministic local `--mock` extractor.
+- Offline testing and CI support without external API calls.
+
+### Deterministic State Reducer (`src/reducer.py`)
+
+Pure Python state transition logic (`apply_delta`) handling:
+
+- Case-insensitive deduplication.
+- Automatic migration of abandoned tools from `tech_stack` to `deprecated_approaches`.
+- Substring-matched bug clearance.
+
+### Token-Budgeted Prompt Compiler (`src/compiler.py`)
+
+Compiles `ProjectState` into a structured Markdown prompt guaranteed to satisfy:
+
+`compiled_tokens <= budget`
+
+When over budget, it drops lowest-priority items first:
+
+1. `deprecated_approaches`
+2. `next_steps`
+3. `active_bugs`
+4. `tech_stack`
+
+It strictly preserves the core goal and hard constraints.
+
+### Interfaces (`src/cli.py`, `src/api.py`)
+
+- **CLI:** Typer + Rich terminal interface.
+- **REST API:** FastAPI microservice exposing `POST /compile`.
+
+Designed for automated integration into AI coding agents and chat pipelines.
+
+## System Setup & Installation
+
+### Prerequisites
+
+- Python 3.10+ (`python --version`)
+- Git (`git --version`)
+- A Gemini API Key from Google AI Studio (optional if running in offline `--mock` mode)
+
+### 1. Clone the Repository
+
+```bash
 git clone https://github.com/<your-username>/StateBridge.git
 cd StateBridge
-2. Create and activate a virtual environment
-Windows (PowerShell):
+```
+
+### 2. Create & Activate a Virtual Environment
+
+**Windows (PowerShell):**
+
+```powershell
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-If PowerShell blocks script activation, run the following once, or activate the environment from Command Prompt instead:
+```
+
+If PowerShell blocks script activation, run:
+
+```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-Windows (Command Prompt):
+```
+
+Alternatively, use Command Prompt:
+
+```cmd
 venv\Scripts\activate.bat
-macOS / Linux:
+```
+
+**macOS / Linux:**
+
+```bash
 python3 -m venv venv
 source venv/bin/activate
-3. Install dependencies
-python -m pip install --upgrade pip
+```
+
+### 3. Install Dependencies
+
+```bash
+pip install --upgrade pip
 pip install -r requirements.txt
-4. Configure environment variables
-Create a .env file in the repository root and add your Gemini API key.
+```
 
-Windows (PowerShell):
+### 4. Configure Environment Variables
+
+Create a `.env` file in the root `StateBridge/` directory with your API key.
+
+**Windows (PowerShell):**
+
+```powershell
 Set-Content -Path .env -Value "GEMINI_API_KEY=your_gemini_api_key_here"
-macOS / Linux:
-echo "GEMINI_API_KEY=your_gemini_api_key_here" > .env
-Keep .env out of version control. Do not commit API keys or other secrets.
-How to use StateBridge
-1. REST API integration
-In an agent or application workflow, StateBridge can be called when the conversation history reaches a chosen token threshold. The API accepts a transcript and a target output budget, then returns a compiled handoff prompt.
+```
 
-Start the FastAPI server from the repository root:
+**macOS / Linux:**
+
+```bash
+echo "GEMINI_API_KEY=your_gemini_api_key_here" > .env
+```
+
+## How to Use StateBridge
+
+### 1. Programmatic / Agent Integration via REST API (`src/api.py`)
+
+In production, AI coding assistants and agentic workflows can call StateBridge automatically whenever conversation history exceeds a token threshold.
+
+Start the FastAPI server:
+
+```bash
 uvicorn src.api:app --reload
-Send a request to POST /compile:
+```
+
+Send a `POST /compile` request with your conversation transcript and target token budget:
+
+```bash
 curl -X POST "http://127.0.0.1:8000/compile" \
   -H "Content-Type: application/json" \
   -d '{
@@ -97,64 +185,110 @@ curl -X POST "http://127.0.0.1:8000/compile" \
     "budget": 300,
     "use_mock": false
   }'
-The example sends a single user message and requests a 300-token compiled prompt. Set use_mock to true to use the offline mock extractor.
+```
 
-Interactive API documentation is available at:
-http://127.0.0.1:8000/docs
-2. Command-line interface
-Use the CLI to compile saved session logs, exported JSON chats, or clipboard transcripts into a token-budgeted Markdown file. The output can be used as a handoff prompt or adapted for files such as .cursorrules and CLAUDE.md.
+You can also explore and test the API interactively through Swagger UI:
 
-Compile a transcript using live Gemini extraction:
+[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+### 2. Command-Line Interface (`src/cli.py`)
+
+Use the CLI to compile saved session logs, exported JSON chats, or clipboard transcripts into a token-budgeted handoff file (such as `.cursorrules` or `CLAUDE.md`).
+
+**Compile a conversation log using live Gemini extraction:**
+
+```bash
 python -m src.cli benchmarks/enterprise_session.txt --budget 300
-Save the compiled prompt to a file:
+```
+
+**Save the compiled handoff prompt directly to a file:**
+
+```bash
 python -m src.cli benchmarks/enterprise_session.txt --budget 300 --out handoff.md
-Run offline with the deterministic mock extractor:
+```
+
+**Run completely offline using the deterministic fallback extractor:**
+
+```bash
 python -m src.cli benchmarks/enterprise_session.txt --budget 300 --mock
-Read a transcript from the system clipboard:
+```
+
+**Read a transcript directly from your OS clipboard:**
+
+```bash
 python -m src.cli --clipboard --budget 300 --mock
-CLI options
-Option	Default	Description
-CHAT_FILE	None	Path to a .txt, .md, or .json transcript
---clipboard, -c	False	Read input directly from the system clipboard
---budget, -b	500	Maximum token count for the compiled output prompt
---batch-size	4	Number of conversation turns processed in each delta batch
---model, -m	gemini-3.1-flash-lite	Primary Gemini model used for delta extraction
---mock	False	Use the local deterministic extractor without external API calls
---out, -o	None	Optional path for saving the compiled Markdown prompt
+```
+
+### CLI Options
+
+| Option | Default | Description |
+|---|---|---|
+| `CHAT_FILE` | `None` | Path to a `.txt`, `.md`, or `.json` chat transcript |
+| `--clipboard`, `-c` | `False` | Read input transcript directly from the OS clipboard |
+| `--budget`, `-b` | `500` | Maximum allowed tokens in the compiled output prompt |
+| `--batch-size` | `4` | Number of conversation turns processed per delta batch |
+| `--model`, `-m` | `gemini-3.1-flash-lite` | Primary Gemini model used for delta extraction |
+| `--mock` | `False` | Use the local deterministic extractor without external API calls |
+| `--out`, `-o` | `None` | Optional file path to save the compiled Markdown prompt |
 
 
-3. Run tests and benchmarks
-Run the unit test suite:
+### 3. Run Benchmarks & Unit Tests
+
+Verify deterministic state reduction, token-budget priority trimming, and multi-file compression ratios.
+
+**Run the pytest unit test suite:**
+
+```bash
 pytest -v
-Run compression benchmarks over the sample transcripts in benchmarks/:
+```
+
+**Run compression benchmarks across all sample transcripts in `benchmarks/`:**
+
+```bash
 python -m benchmarks.evaluate --budget 300
-Run the benchmarks with live Gemini extraction:
+```
+
+**Run benchmarks with live Gemini extraction:**
+
+```bash
 python -m benchmarks.evaluate --budget 300 --live
-The tests cover deterministic state reduction, including deduplication, deprecation, and bug resolution, as well as token-budget enforcement and priority-based trimming. The benchmark runner evaluates compression across multiple sample transcripts.
-Project structure
+```
+
+## Project Structure
+
+```text
 StateBridge/
 ├── benchmarks/
 │   ├── evaluate.py              # Multi-file token compression benchmark runner
-│   ├── sample_chat.txt           # Short baseline conversation transcript
-│   ├── long_session.txt          # Multi-turn webhook service debugging session
-│   └── enterprise_session.txt    # 44-turn IoT ingestion session with 4 stack pivots
+│   ├── sample_chat.txt          # Short baseline conversation transcript
+│   ├── long_session.txt         # Multi-turn webhook service debugging session
+│   └── enterprise_session.txt   # 44-turn IoT ingestion session with 4 stack pivots
+│
 ├── src/
-│   ├── schema.py                 # ProjectState and StateDelta Pydantic v2 schemas
-│   ├── parser.py                 # Transcript detection, turn splitting, batching, token counting
-│   ├── extractor.py              # Gemini structured-output extractor and offline fallback
-│   ├── reducer.py                # Deterministic state merge, deprecation, and bug clearance
-│   ├── compiler.py               # Priority-trimmed Markdown prompt compiler
-│   ├── cli.py                    # Typer + Rich command-line interface
-│   └── api.py                    # FastAPI microservice (POST /compile)
+│   ├── schema.py                # ProjectState & StateDelta Pydantic v2 schemas
+│   ├── parser.py                # Auto-detecting turn splitter, batch chunker & tiktoken counter
+│   ├── extractor.py             # Gemini structured output delta extractor + offline fallback
+│   ├── reducer.py               # Deterministic state merge, deprecation & bug-clearance engine
+│   ├── compiler.py              # Priority-trimmed Markdown prompt compiler
+│   ├── cli.py                   # Typer + Rich terminal CLI
+│   └── api.py                   # FastAPI microservice (POST /compile)
+│
 ├── tests/
-│   ├── test_reducer.py           # Tests for deduplication, deprecation, and bug resolution
-│   └── test_compiler.py          # Tests for token-budget enforcement and priority trimming
+│   ├── test_reducer.py          # Unit tests for deduplication, deprecation & bug resolution
+│   └── test_compiler.py         # Unit tests for token-budget enforcement & priority trimming
+│
 ├── requirements.txt
 └── README.md
-Design principles
-- LLMs interpret; Python enforces. The extractor proposes structured changes, while deterministic code applies those changes and enforces the output budget.
-- Preserve critical project context. The compiler prioritizes the core goal and hard constraints over lower-priority context when trimming.
-- Keep state portable. The compiled output is Markdown, so it can be passed into a new session or a different model without requiring a model-specific memory format.
-- Support reproducible local testing. Mock mode allows the pipeline to be exercised without a Gemini API key or network calls.
-License
-Add the license and attribution details for this project here before publishing or distributing it.
+```
+
+---
+
+## Design Philosophy
+
+StateBridge follows one central principle:
+
+**LLMs extract meaning. Deterministic code manages state.**
+
+By separating probabilistic semantic understanding from deterministic state management, StateBridge aims to make long-running LLM engineering workflows more predictable, portable, and efficient.
+
+The result is a compact, structured handoff that preserves essential project context without carrying the entire conversation history into every new session.
